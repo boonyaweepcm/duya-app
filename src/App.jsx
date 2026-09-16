@@ -279,7 +279,15 @@ async function extractMedsFromFile(file) {
             type: "text",
             text: `อ่านฉลากยา/ใบสั่งยานี้ แล้วแปลงยาแต่ละตัวเป็น JSON array ตามรูปแบบนี้ (ห้ามเดาข้อมูลที่ไม่มีในภาพ ถ้าไม่ทราบให้เว้นว่าง):
 [{"tradeName":"","genericName":"","genericNameEn":"","dose":"","qty":"","frequency":"","timing":["breakfast"|"lunch"|"dinner"|"bedtime"],"food":"before"|"after"|"unspecified","purpose":"","pill":{"type":"tablet"|"capsule","colorName":"","scored":true|false,"imprint":""}}]
-คุณสามารถใช้ความรู้ทั่วไปเกี่ยวกับรูปลักษณ์ยาที่พบบ่อยในไทยเพื่อเติมข้อมูล pill ได้ แต่ห้ามเดาชื่อยา ขนาดยา หรือวิธีใช้ที่ไม่ปรากฏในภาพ`,
+คุณสามารถใช้ความรู้ทั่วไปเกี่ยวกับรูปลักษณ์ยาที่พบบ่อยในไทยเพื่อเติมข้อมูล pill ได้ แต่ห้ามเดาชื่อยา ขนาดยา หรือวิธีใช้ที่ไม่ปรากฏในภาพ
+
+หากพบสัญกรณ์ย่อที่แพทย์/เภสัชกรไทยนิยมเขียนแทนวิธีใช้ยา (เช่นรูปแบบ "จำนวนเม็ดต่อครั้ง x จำนวนครั้งต่อวัน") ให้แปลเป็นภาษาที่อ่านง่ายในฟิลด์ qty และ frequency โดยไม่เปลี่ยนความหมายเดิม ตัวอย่าง:
+- "1x1" → qty: "1 เม็ด", frequency: "วันละ 1 ครั้ง"
+- "2x1" → qty: "2 เม็ด", frequency: "วันละ 1 ครั้ง (ครั้งละ 2 เม็ด)"
+- "1x2" → qty: "1 เม็ด", frequency: "วันละ 2 ครั้ง"
+- "1x3" → qty: "1 เม็ด", frequency: "วันละ 3 ครั้ง"
+- "2x2" → qty: "2 เม็ด", frequency: "วันละ 2 ครั้ง (ครั้งละ 2 เม็ด)"
+แปลเฉพาะสัญกรณ์ที่ปรากฏจริงในภาพเท่านั้น ห้ามเดาความถี่ที่ไม่มีเบาะแสในภาพ`,
           },
         ],
       },
@@ -313,28 +321,29 @@ function normalizeParsedMed(raw) {
   };
 }
 
-/** Renders a DOM node to a real, multi-page A4 jsPDF document. */
+/** Renders a DOM node to a single-page A4 jsPDF document. The captured content is scaled
+ *  proportionally (never cropped) so it always fits exactly one portrait page, centered. */
 async function renderPdfDoc(node) {
   const canvas = await html2canvas(node, { scale: 2, backgroundColor: "#ffffff", useCORS: true });
   const pdf = new jsPDF({ unit: "mm", format: "a4", orientation: "portrait" });
   const pageWidth = pdf.internal.pageSize.getWidth();
   const pageHeight = pdf.internal.pageSize.getHeight();
-  const imgWidth = pageWidth;
-  const imgHeight = (canvas.height * imgWidth) / canvas.width;
+  const margin = 8; // mm — comfortable print margin
+  const maxWidth = pageWidth - margin * 2;
+  const maxHeight = pageHeight - margin * 2;
 
-  let heightLeft = imgHeight;
-  let position = 0;
-  const imgData = canvas.toDataURL("image/jpeg", 0.95);
-
-  pdf.addImage(imgData, "JPEG", 0, position, imgWidth, imgHeight);
-  heightLeft -= pageHeight;
-
-  while (heightLeft > 0) {
-    position = heightLeft - imgHeight;
-    pdf.addPage();
-    pdf.addImage(imgData, "JPEG", 0, position, imgWidth, imgHeight);
-    heightLeft -= pageHeight;
+  const canvasRatio = canvas.width / canvas.height;
+  let renderWidth = maxWidth;
+  let renderHeight = renderWidth / canvasRatio;
+  if (renderHeight > maxHeight) {
+    renderHeight = maxHeight;
+    renderWidth = renderHeight * canvasRatio;
   }
+  const x = (pageWidth - renderWidth) / 2;
+  const y = (pageHeight - renderHeight) / 2;
+
+  const imgData = canvas.toDataURL("image/jpeg", 0.95);
+  pdf.addImage(imgData, "JPEG", x, y, renderWidth, renderHeight);
   return pdf;
 }
 
@@ -490,36 +499,48 @@ function StepProgress({ step }) {
 
 function AppHeader({ onReset, onHelp }) {
   return (
-    <header className="no-print sticky top-0 z-40 bg-white/90 backdrop-blur border-b border-slate-200">
-      <div className="max-w-6xl mx-auto px-4 md:px-8 h-16 md:h-20 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 md:w-11 md:h-11 rounded-xl bg-teal-700 flex items-center justify-center relative">
-            <Pill className="w-5 h-5 md:w-6 md:h-6 text-white" />
-            <CalendarDays className="w-3.5 h-3.5 text-teal-700 absolute -bottom-1 -right-1 bg-white rounded-full p-0.5" />
+    <header className="no-print sticky top-0 z-40 shadow-md">
+      <div className="bg-gradient-to-r from-teal-700 via-teal-600 to-emerald-600">
+        <div className="max-w-6xl mx-auto px-4 md:px-8 h-16 md:h-20 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            {/* App icon badge */}
+            <div className="relative w-11 h-11 md:w-12 md:h-12 rounded-2xl bg-white shadow-sm flex items-center justify-center shrink-0">
+              <Pill className="w-6 h-6 md:w-7 md:h-7 text-teal-700" />
+              <div className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-teal-700 border-2 border-white flex items-center justify-center">
+                <CalendarDays className="w-3 h-3 text-white" />
+              </div>
+            </div>
+            <div className="min-w-0 leading-tight">
+              <div className="flex items-center gap-2">
+                <p className="text-lg md:text-xl font-extrabold text-white truncate">ดูยา</p>
+                <span className="hidden md:inline-block text-[10px] font-semibold uppercase tracking-wide bg-white/20 text-white px-2 py-0.5 rounded-full shrink-0">
+                  Medication Planner
+                </span>
+              </div>
+              <p className="text-[11px] md:text-xs text-teal-50/90 -mt-0.5 truncate">Do the Drug Plan for Ya</p>
+            </div>
           </div>
-          <div className="leading-tight">
-            <p className="text-lg md:text-xl font-extrabold text-slate-900">ดูยา</p>
-            <p className="text-[11px] md:text-xs text-slate-500 -mt-0.5">Do the Drug Plan for Ya</p>
+          <div className="flex items-center gap-1.5 md:gap-2 shrink-0">
+            <button
+              onClick={onHelp}
+              className="flex items-center gap-1.5 px-2.5 md:px-3 py-2 rounded-lg text-white/90 hover:bg-white/15 text-sm font-medium transition-colors"
+            >
+              <HelpCircle className="w-4 h-4 md:w-5 md:h-5" />
+              <span className="hidden sm:inline">ช่วยเหลือ</span>
+            </button>
+            <button
+              onClick={onReset}
+              title="เริ่มต้นใหม่"
+              className="flex items-center gap-1.5 px-2.5 md:px-3.5 py-2 rounded-lg bg-white text-teal-700 hover:bg-teal-50 text-sm font-semibold shadow-sm transition-colors"
+            >
+              <RotateCcw className="w-4 h-4 md:w-5 md:h-5" />
+              <span className="hidden sm:inline">เริ่มใหม่</span>
+            </button>
           </div>
-        </div>
-        <div className="flex items-center gap-1 md:gap-2">
-          <button
-            onClick={onHelp}
-            className="flex items-center gap-1.5 px-2.5 md:px-3 py-2 rounded-lg text-slate-600 hover:bg-slate-100 text-sm font-medium"
-          >
-            <HelpCircle className="w-4 h-4 md:w-5 md:h-5" />
-            <span className="hidden sm:inline">ช่วยเหลือ</span>
-          </button>
-          <button
-            onClick={onReset}
-            title="เริ่มต้นใหม่"
-            className="flex items-center gap-1.5 px-2.5 md:px-3 py-2 rounded-lg text-slate-600 hover:bg-slate-100 text-sm font-medium"
-          >
-            <RotateCcw className="w-4 h-4 md:w-5 md:h-5" />
-            <span className="hidden sm:inline">เริ่มใหม่</span>
-          </button>
         </div>
       </div>
+      {/* Subtle brand accent line */}
+      <div className="h-1 bg-gradient-to-r from-amber-400 via-emerald-500 to-sky-500" />
     </header>
   );
 }
@@ -652,7 +673,10 @@ function MedicationFormFields({ draft, setDraft }) {
       </div>
 
       <div className="md:col-span-2 rounded-xl border border-slate-200 p-3.5 bg-slate-50">
-        <p className="text-sm font-semibold text-slate-700 mb-2">ลักษณะเม็ดยา (สำหรับแสดงรูปเม็ดยา)</p>
+        <div className="flex items-center gap-3 mb-2">
+          <PillVisual pill={draft.pill} size={44} />
+          <p className="text-sm font-semibold text-slate-700">ลักษณะเม็ดยา (สำหรับแสดงรูปเม็ดยา)</p>
+        </div>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 items-end">
           <div>
             <label className="block text-xs text-slate-500 mb-1">รูปแบบ</label>
@@ -1298,16 +1322,19 @@ function Step2({ medications, patient, setPatient, onBack, onNext }) {
 /*  STEP 3 — Visual medication summary (hero page)                     */
 /* ------------------------------------------------------------------ */
 
-function FoodTimingBadge({ med, tone }) {
+function FoodTimingBadge({ med, tone, pdfMode }) {
   if (med.food === "unspecified") {
-    return <span className="text-slate-300 text-xl font-bold">–</span>;
+    return <span className={`text-slate-300 font-bold ${pdfMode ? "text-2xl" : "text-xl"}`}>–</span>;
   }
   const isBefore = med.food === "before";
+  const iconSize = pdfMode ? "w-6 h-6" : "w-5 h-5";
+  const labelSize = pdfMode ? "text-lg" : "text-sm md:text-base";
+  const detailSize = pdfMode ? "text-sm" : "text-xs";
   return (
     <div className="flex flex-col items-center text-center gap-0.5">
-      {isBefore ? <Sun className={`w-5 h-5 ${tone}`} /> : <UtensilsCrossed className={`w-5 h-5 ${tone}`} />}
-      <span className="font-bold text-slate-800 text-sm md:text-base leading-tight">{FOOD_LABEL[med.food]}</span>
-      {med.timingDetail && <span className="text-xs text-slate-400 leading-tight">{med.timingDetail}</span>}
+      {isBefore ? <Sun className={`${iconSize} ${tone}`} /> : <UtensilsCrossed className={`${iconSize} ${tone}`} />}
+      <span className={`font-bold text-slate-800 leading-tight ${labelSize}`}>{FOOD_LABEL[med.food]}</span>
+      {med.timingDetail && <span className={`text-slate-400 leading-tight ${detailSize}`}>{med.timingDetail}</span>}
     </div>
   );
 }
@@ -1334,13 +1361,27 @@ function buildScheduleRows(grouped) {
   return rows;
 }
 
-function ScheduleTable({ grouped }) {
+/** The medication schedule table. pdfMode=true is used only by the hidden PDF-export layout
+ *  (always the desktop table, with larger fonts) — the normal on-screen table is unaffected. */
+function ScheduleTable({ grouped, pdfMode }) {
   const rows = useMemo(() => buildScheduleRows(grouped), [grouped]);
+  const headSize = pdfMode ? "text-xl" : "text-base md:text-lg";
+  const mealLabelSize = pdfMode ? "text-xl" : "text-base md:text-lg";
+  const mealTimeSize = pdfMode ? "text-sm" : "text-xs";
+  const mealIconSize = pdfMode ? "w-8 h-8" : "w-7 h-7";
+  const nameSize = pdfMode ? "text-2xl" : "text-lg md:text-xl";
+  const secondarySize = pdfMode ? "text-base" : "text-sm";
+  const purposeSize = pdfMode ? "text-lg" : "text-sm md:text-base";
+  const qtySize = pdfMode ? "text-xl" : "text-base md:text-lg";
+  const emptySize = pdfMode ? "text-lg" : "text-sm md:text-base";
+  const pillSize = pdfMode ? 64 : 52;
+  const cellPad = pdfMode ? "py-4 px-4" : "py-3.5 px-4";
+
   return (
-    <div className="hidden sm:block rounded-2xl border border-slate-200 overflow-hidden">
+    <div className="rounded-2xl border border-slate-200 overflow-hidden">
       <table className="w-full text-left border-collapse">
         <thead>
-          <tr className="bg-teal-800 text-white text-base md:text-lg">
+          <tr className={`bg-teal-800 text-white ${headSize}`}>
             <th className="py-3 px-4 font-bold">มื้อ / เวลา</th>
             <th className="py-3 px-4 font-bold">ก่อน-หลังอาหาร</th>
             <th className="py-3 px-4 font-bold">ชื่อยา (ขนาดยา)</th>
@@ -1359,28 +1400,28 @@ function ScheduleTable({ grouped }) {
                 {first && (
                   <td rowSpan={span} className={`align-middle py-4 px-4 border-r-2 ${meal.border}`}>
                     <div className="flex flex-col items-center text-center gap-1 w-24">
-                      <Icon className={`w-7 h-7 ${meal.icon}`} />
-                      <span className={`font-extrabold text-base md:text-lg ${meal.text}`}>{meal.label}</span>
-                      <span className="text-xs text-slate-500">{meal.time}</span>
+                      <Icon className={`${mealIconSize} ${meal.icon}`} />
+                      <span className={`font-extrabold ${mealLabelSize} ${meal.text}`}>{meal.label}</span>
+                      <span className={`text-slate-500 ${mealTimeSize}`}>{meal.time}</span>
                     </div>
                   </td>
                 )}
                 {med === null ? (
-                  <td colSpan={5} className="py-5 px-4 text-slate-400 italic text-sm md:text-base">
+                  <td colSpan={5} className={`py-5 px-4 text-slate-400 italic ${emptySize}`}>
                     ไม่มีรายการยา
                   </td>
                 ) : (
                   <>
-                    <td className="py-3.5 px-4 align-middle">
-                      <FoodTimingBadge med={med} tone={meal.icon} />
+                    <td className={`${cellPad} align-middle`}>
+                      <FoodTimingBadge med={med} tone={meal.icon} pdfMode={pdfMode} />
                     </td>
-                    <td className="py-3.5 px-4 align-middle">
+                    <td className={`${cellPad} align-middle`}>
                       {(() => {
                         const { primary, secondary } = medNames(med);
                         return (
                           <>
-                            <p className={`text-lg md:text-xl font-extrabold ${meal.text}`}>{primary}</p>
-                            <p className="text-sm text-slate-500">
+                            <p className={`font-extrabold ${nameSize} ${meal.text}`}>{primary}</p>
+                            <p className={`text-slate-500 ${secondarySize}`}>
                               {secondary ? `${secondary} ` : ""}
                               {med.dose}
                             </p>
@@ -1388,15 +1429,15 @@ function ScheduleTable({ grouped }) {
                         );
                       })()}
                     </td>
-                    <td className="py-3.5 px-4 align-middle text-sm md:text-base text-slate-700">
+                    <td className={`${cellPad} align-middle text-slate-700 ${purposeSize}`}>
                       {med.purpose || "ยังไม่มีข้อมูล"}
                     </td>
-                    <td className="py-3.5 px-4 align-middle">
+                    <td className={`${cellPad} align-middle`}>
                       <div className="flex justify-center">
-                        <PillVisual pill={med.pill} size={52} />
+                        <PillVisual pill={med.pill} size={pillSize} />
                       </div>
                     </td>
-                    <td className="py-3.5 px-4 align-middle text-base md:text-lg font-bold text-slate-800">
+                    <td className={`${cellPad} align-middle font-bold text-slate-800 ${qtySize}`}>
                       {med.qty || "ยังไม่มีข้อมูล"}
                     </td>
                   </>
@@ -1505,6 +1546,71 @@ function QRCodeModal({ onClose, url }) {
   );
 }
 
+/** Footer notes block, shared between the on-screen page and the PDF-only layout (larger text when pdfMode). */
+function ScheduleFooterNotes({ pdfMode }) {
+  const notes = [
+    "รับประทานยาตามเวลาอย่างสม่ำเสมอ เพื่อให้ยาออกฤทธิ์ได้ดี",
+    "ไม่หยุดยาเอง หากมีอาการผิดปกติให้ปรึกษาแพทย์หรือเภสัชกร",
+    "หากลืมรับประทานยา ให้รับประทานทันทีที่นึกได้ แต่ถ้าใกล้เวลามื้อถัดไป ให้ข้ามมื้อที่ลืมและรับประทานมื้อต่อไปตามปกติ",
+    "เก็บยาให้พ้นแสง ความชื้น และพ้นมือเด็ก",
+  ];
+  const boxTitleSize = pdfMode ? "text-lg" : "text-base";
+  const noteTextSize = pdfMode ? "text-base" : "text-sm";
+  const badgeTitleSize = pdfMode ? "text-lg" : "text-base";
+  const badgeLabelSize = pdfMode ? "text-sm" : "text-xs";
+  const badgeIconSize = pdfMode ? "w-7 h-7" : "w-6 h-6";
+  const closingSize = pdfMode ? "text-base" : "text-sm";
+
+  return (
+    <>
+      <div className="mt-6 grid md:grid-cols-2 gap-4">
+        <div className="avoid-break rounded-2xl border border-slate-200 p-4 md:p-5">
+          <p className={`font-bold text-slate-800 mb-2 ${boxTitleSize}`}>หมายเหตุ</p>
+          <ul className={`space-y-1.5 text-slate-600 list-disc list-inside ${noteTextSize}`}>
+            {notes.map((n) => (
+              <li key={n}>{n}</li>
+            ))}
+          </ul>
+        </div>
+        <div className="avoid-break rounded-2xl border border-teal-100 bg-teal-50/60 p-4 md:p-5">
+          <p className={`font-bold text-teal-800 mb-3 text-center ${badgeTitleSize}`}>ทานยาสม่ำเสมอ ดีต่อสุขภาพ</p>
+          <div className="grid grid-cols-3 gap-2 text-center">
+            <div className="flex flex-col items-center gap-1">
+              <AlarmClock className={`${badgeIconSize} text-teal-700`} />
+              <span className={`text-slate-600 leading-tight ${badgeLabelSize}`}>ทานให้ตรงเวลาทุกวัน</span>
+            </div>
+            <div className="flex flex-col items-center gap-1">
+              <CalendarCheck className={`${badgeIconSize} text-teal-700`} />
+              <span className={`text-slate-600 leading-tight ${badgeLabelSize}`}>ไม่หยุดยาเอง</span>
+            </div>
+            <div className="flex flex-col items-center gap-1">
+              <Stethoscope className={`${badgeIconSize} text-teal-700`} />
+              <span className={`text-slate-600 leading-tight ${badgeLabelSize}`}>พบแพทย์ตามนัด</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p className={`mt-5 text-center text-slate-500 ${closingSize}`}>
+        หากมีข้อสงสัยเกี่ยวกับการใช้ยา โปรดสอบถามแพทย์หรือเภสัชกร
+      </p>
+    </>
+  );
+}
+
+/** New PDF-only header: "ตารางสรุปการรับประทานยา / ของ [ชื่อ] / HN [HN]" — used only inside the hidden PDF layout. */
+function PdfHeader({ patient }) {
+  return (
+    <div className="mb-4">
+      <h1 className="text-4xl font-extrabold text-slate-900 leading-tight">ตารางสรุปการรับประทานยา</h1>
+      <p className="text-2xl font-bold text-teal-800 mt-1">ของ {patient.name || "ยังไม่มีข้อมูล"}</p>
+      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 mt-1">
+        <p className="text-xl font-bold text-slate-700">HN {patient.hn || "ยังไม่มีข้อมูล"}</p>
+        <p className="text-sm text-slate-500">วันที่จัดทำ {patient.date}</p>
+      </div>
+    </div>
+  );
+}
+
 function Step3({ medications, patient, onBack, notify }) {
   const [showQR, setShowQR] = useState(false);
   const [generatingPdf, setGeneratingPdf] = useState(false);
@@ -1554,16 +1660,9 @@ function Step3({ medications, patient, onBack, notify }) {
     }
   };
 
-  const notes = [
-    "รับประทานยาตามเวลาอย่างสม่ำเสมอ เพื่อให้ยาออกฤทธิ์ได้ดี",
-    "ไม่หยุดยาเอง หากมีอาการผิดปกติให้ปรึกษาแพทย์หรือเภสัชกร",
-    "หากลืมรับประทานยา ให้รับประทานทันทีที่นึกได้ แต่ถ้าใกล้เวลามื้อถัดไป ให้ข้ามมื้อที่ลืมและรับประทานมื้อต่อไปตามปกติ",
-    "เก็บยาให้พ้นแสง ความชื้น และพ้นมือเด็ก",
-  ];
-
   return (
     <div className="max-w-5xl mx-auto px-4 md:px-0 pb-24">
-      <div className="print-area" ref={printRef}>
+      <div className="print-area">
         {/* Header card */}
         <div className="rounded-2xl border border-slate-200 bg-white p-4 md:p-6 flex flex-col md:flex-row md:items-center gap-4 md:gap-6 mb-2">
           <div className="flex items-center gap-3 md:gap-4">
@@ -1596,41 +1695,25 @@ function Step3({ medications, patient, onBack, notify }) {
           ข้อมูลในตารางสร้างจากคำสั่งยาและผ่านการตรวจสอบก่อนนำไปใช้
         </p>
 
-        <ScheduleTable grouped={grouped} />
+        <div className="hidden sm:block">
+          <ScheduleTable grouped={grouped} />
+        </div>
         <ScheduleMobile grouped={grouped} />
 
-        {/* Footer notes */}
-        <div className="mt-6 grid md:grid-cols-2 gap-4">
-          <div className="avoid-break rounded-2xl border border-slate-200 p-4 md:p-5">
-            <p className="font-bold text-slate-800 mb-2">หมายเหตุ</p>
-            <ul className="space-y-1.5 text-sm text-slate-600 list-disc list-inside">
-              {notes.map((n) => (
-                <li key={n}>{n}</li>
-              ))}
-            </ul>
-          </div>
-          <div className="avoid-break rounded-2xl border border-teal-100 bg-teal-50/60 p-4 md:p-5">
-            <p className="font-bold text-teal-800 mb-3 text-center">ทานยาสม่ำเสมอ ดีต่อสุขภาพ</p>
-            <div className="grid grid-cols-3 gap-2 text-center">
-              <div className="flex flex-col items-center gap-1">
-                <AlarmClock className="w-6 h-6 text-teal-700" />
-                <span className="text-xs text-slate-600 leading-tight">ทานให้ตรงเวลาทุกวัน</span>
-              </div>
-              <div className="flex flex-col items-center gap-1">
-                <CalendarCheck className="w-6 h-6 text-teal-700" />
-                <span className="text-xs text-slate-600 leading-tight">ไม่หยุดยาเอง</span>
-              </div>
-              <div className="flex flex-col items-center gap-1">
-                <Stethoscope className="w-6 h-6 text-teal-700" />
-                <span className="text-xs text-slate-600 leading-tight">พบแพทย์ตามนัด</span>
-              </div>
-            </div>
-          </div>
-        </div>
+        <ScheduleFooterNotes />
+      </div>
 
-        <p className="mt-5 text-center text-sm text-slate-500">
-          หากมีข้อสงสัยเกี่ยวกับการใช้ยา โปรดสอบถามแพทย์หรือเภสัชกร
-        </p>
+      {/* Hidden PDF-only layout: always the desktop table at a fixed width, so PDFs generated from any
+          device (phone, tablet, desktop) come out identical, regardless of the responsive view on screen. */}
+      <div aria-hidden="true" className="pointer-events-none fixed top-0" style={{ left: "-10000px", zIndex: -1 }}>
+        <div ref={printRef} className="bg-white p-8" style={{ width: "800px" }}>
+          <PdfHeader patient={patient} />
+          <p className="text-sm text-slate-400 mb-5">
+            ข้อมูลในตารางสร้างจากคำสั่งยาและผ่านการตรวจสอบก่อนนำไปใช้
+          </p>
+          <ScheduleTable grouped={grouped} pdfMode />
+          <ScheduleFooterNotes pdfMode />
+        </div>
       </div>
 
       {/* Action bar */}
